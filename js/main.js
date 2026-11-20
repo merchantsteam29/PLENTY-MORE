@@ -9,8 +9,8 @@
   const SET = Object.assign({ quality: isTouch ? 'low' : 'high', sens: 1, invert: false, text: 'normal', vol: 0.9, music: 0.7, fov: 72 }, store.get('settings', {}));
   const QL = {
     low: { tex: 0.5, face: 256, body: 256, aniso: 2, trees: 420, grass: 2200, flowers: 500, shadow: 1024, pool: 2, pr: 0.85, aa: false, rain: 1100, baseShadow: false, soft: false },
-    medium: { tex: 0.75, face: 512, body: 512, aniso: 4, trees: 700, grass: 6000, flowers: 1100, shadow: 1536, pool: 3, pr: 1.0, aa: true, rain: 2000, baseShadow: true, soft: true },
-    high: { tex: 1, face: 512, body: 512, aniso: 8, trees: 900, grass: 10000, flowers: 1600, shadow: 2048, pool: 4, pr: 1.5, aa: true, rain: 2600, baseShadow: true, soft: true }
+    medium: { tex: 0.75, face: 512, body: 512, aniso: 4, trees: 650, grass: 4500, flowers: 1000, shadow: 1024, pool: 3, pr: 1.0, aa: true, rain: 2000, baseShadow: false, soft: false },
+    high: { tex: 1, face: 512, body: 512, aniso: 8, trees: 850, grass: 7000, flowers: 1400, shadow: 2048, pool: 3, pr: 1.25, aa: true, rain: 2600, baseShadow: false, soft: true }
   };
   const Q = QL[SET.quality] || QL.high;
   IN.sens = SET.sens; IN.invert = SET.invert;
@@ -75,7 +75,9 @@
     portrait.cam.position.copy(hc).addScaledVector(_fw, 0.62).addScaledVector(_up, 0.02); portrait.cam.up.copy(_up); portrait.cam.lookAt(hc);
     portrait.clear.set(G.shade(G.CHARS[who].hair, -0.62)).convertSRGBToLinear();
     const oc = renderer.getClearColor(new THREE.Color()), oa = renderer.getClearAlpha(), fog = scene.fog; scene.fog = null;
+    const sau = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
     renderer.setRenderTarget(portrait.rt); renderer.setClearColor(portrait.clear, 1); renderer.clear(); renderer.render(scene, portrait.cam); renderer.setRenderTarget(null);
+    renderer.shadowMap.autoUpdate = sau;
     scene.fog = fog; renderer.setClearColor(oc, oa);
     if (restore) leonP.root.visible = false;
     // blit (posterized) under the dialog box, then copy those pixels into the visible 2D portrait canvas
@@ -366,7 +368,7 @@
     W.hemi.intensity = W.pre.hi * hemiK + (rg === 'in' || rg === 'up' ? 0.05 : 0);
     W.sun.intensity = W.pre.si * (rg === 'base' ? 0 : 1);
     W.followSun(P.x, P.z);
-    sunFrame++; W.sun.shadow.autoUpdate = rg === 'out' || (rg !== 'base' && sunFrame % 3 === 0) || E.forceShadow;
+    sunFrame++; W.sun.shadow.autoUpdate = (rg === 'out' && sunFrame % 2 === 0) || (rg !== 'base' && rg !== 'out' && sunFrame % 4 === 0) || E.forceShadow;
     W.bLight.shadow.autoUpdate = rg === 'base';
     W.update(dt, rg, actors); W.updateLights(cp, dt);
     if (E.phoneLight) { W.lightsSrc.phone.on = true; W.lightsSrc.phone.p.copy(E.phoneLight); } else W.lightsSrc.phone.on = false;
@@ -380,9 +382,9 @@
     if (A.ready()) { A.listener(camera); A.tick(dt, { fire: (rg === 'in') && W.lightsSrc.fire.on ? 1 : 0, sizzle: E.amb.sizzle && rg === 'in', birds: rg === 'out' && !paused ? W.pre.birds : 0, night: W.pre.night, inside: rg !== 'out', rain: W.pre.rain && rg === 'out' ? 1 : 0, px: P.x, py: P.y, pz: P.z }); }
     // dynamic resolution
     frameN++; prPerf = prPerf * 0.95 + rdt * 0.05;
-    if (frameN % 60 === 0 && started) { const cur = renderer.getPixelRatio(), maxPR = Math.min(window.devicePixelRatio || 1, Q.pr); let np = cur; if (prPerf > 1 / 45) np = Math.max(0.6, cur - 0.1); else if (prPerf < 1 / 58 && cur < maxPR) np = Math.min(maxPR, cur + 0.05); if (Math.abs(np - cur) > 0.01) renderer.setPixelRatio(np); }
+    if (frameN % 40 === 0 && started) { const cur = renderer.getPixelRatio(), maxPR = Math.min(window.devicePixelRatio || 1, Q.pr); let np = cur; if (prPerf > 1 / 52) np = Math.max(0.6, cur - 0.1); else if (prPerf < 1 / 59 && cur < maxPR) np = Math.min(maxPR, cur + 0.05); if (Math.abs(np - cur) > 0.01) renderer.setPixelRatio(np); }
     renderer.render(scene, camera);
-    if (dlg) renderPortrait(dlg.who);
+    if (dlg && frameN % 2 === 0) renderPortrait(dlg.who);
   }
 
   // ================= story API =================

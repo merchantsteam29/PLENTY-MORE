@@ -9,11 +9,16 @@ G.buildWorld = function (scene, T, Q) {
 
   // ---------- static merge builder ----------
   const groups = new Map();
+  const VC = new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 8, specular: new THREE.Color(0x111111) }), VCs = new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 60, specular: new THREE.Color(0x444444) });
   function addStatic(geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, cast = true, sc) {
     const m = new THREE.Matrix4().compose(new V3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), sc || new V3(1, 1, 1));
     if (geo.index) geo = geo.toNonIndexed();
     if (geo.attributes.color) geo.deleteAttribute('color');
     geo.applyMatrix4(m);
+    if (!mat.map && !mat.transparent && mat.side === THREE.FrontSide && mat.isMeshPhongMaterial && !(mat.emissive && (mat.emissive.r + mat.emissive.g + mat.emissive.b) > 0)) {
+      const n = geo.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) { a[i * 3] = mat.color.r; a[i * 3 + 1] = mat.color.g; a[i * 3 + 2] = mat.color.b; }
+      geo.setAttribute('color', new THREE.BufferAttribute(a, 3)); mat = mat.shininess > 30 ? VCs : VC;
+    }
     const k = mat.uuid + (cast ? 'c' : '');
     if (!groups.has(k)) groups.set(k, { mat, cast, list: [] });
     groups.get(k).list.push(geo);
@@ -135,10 +140,31 @@ G.buildWorld = function (scene, T, Q) {
   };
   const vcol = (g, c, j = 0.1) => { g = g.index ? g.toNonIndexed() : g; const n = g.attributes.position.count, a = new Float32Array(n * 3); for (let k = 0; k < n; k++) { const v = 1 - j / 2 + Math.random() * j; a[k * 3] = c[0] * v; a[k * 3 + 1] = c[1] * v; a[k * 3 + 2] = c[2] * v; } g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
   const blocked = (x, z) => (x > -12 && x < 12 && z > -9 && z < 11) || (Math.abs(x) < 4 && z > 8 && z < 76) || (x > 12 && x < 23 && z > -5 && z < 5) || (x > 11 && x < 18 && z > -12.5 && z < -7.5) || (x > -18.5 && x < -11 && z > -8 && z < 1) || (x > -10 && x < -2 && z > 12 && z < 21);
+  // Split an InstancedMesh into spatial chunks with real bounding spheres, so the camera and the
+  // shadow camera can cull them, plus distance culling (see W.update).
+  W.chunks = [];
+  const chunkify = (inst, cell, rad, maxD, cast) => {
+    const map = new Map(), m = new THREE.Matrix4(), cols = inst.instanceColor;
+    for (let i = 0; i < inst.count; i++) { inst.getMatrixAt(i, m); const e = m.elements, k = Math.floor(e[12] / cell) + ',' + Math.floor(e[14] / cell); if (!map.has(k)) map.set(k, []); map.get(k).push(i); }
+    for (const list of map.values()) {
+      let cx = 0, cy = 0, cz = 0; for (const i of list) { inst.getMatrixAt(i, m); cx += m.elements[12]; cy += m.elements[13]; cz += m.elements[14]; } cx /= list.length; cy /= list.length; cz /= list.length;
+      let r = 0; for (const i of list) { inst.getMatrixAt(i, m); r = Math.max(r, Math.hypot(m.elements[12] - cx, m.elements[13] - cy, m.elements[14] - cz)); }
+      const g = inst.geometry.clone(); g.boundingSphere = new THREE.Sphere(new V3(0, 0, 0), r + rad);
+      const c = new THREE.InstancedMesh(g, inst.material, list.length), off = new THREE.Matrix4().makeTranslation(-cx, -cy, -cz), col = new THREE.Color();
+      list.forEach((i, j) => { inst.getMatrixAt(i, m); c.setMatrixAt(j, off.clone().multiply(m)); if (cols) { inst.getColorAt(i, col); c.setColorAt(j, col); } });
+      c.position.set(cx, cy, cz); c.castShadow = !!cast; c.receiveShadow = true; scene.add(c);
+      W.chunks.push({ mesh: c, x: cx, z: cz, r: r + rad, maxD });
+    }
+    inst.geometry.dispose && 0;
+  };
+  // merge sibling meshes that share a material into one mesh (fewer draw calls)
+  const mergeKids = (group, mat) => { const ks = group.children.filter(c => c.isMesh && c.material === mat); if (ks.length < 2) return ks[0];
+    const gs = ks.map(k => { k.updateMatrix(); const g = k.geometry.index ? k.geometry.toNonIndexed() : k.geometry.clone(); g.applyMatrix4(k.matrix); return g; });
+    ks.forEach(k => group.remove(k)); const m = new THREE.Mesh(THREE.BufferGeometryUtils.mergeBufferGeometries(gs), mat); m.castShadow = ks[0].castShadow; group.add(m); return m; };
   W.treePos = [];
   {
     const parts = [], trunk = new THREE.CylinderGeometry(0.14, 0.26, 2.4, 6); trunk.translate(0, 1.2, 0); parts.push(vcol(trunk, [0.3, 0.2, 0.13]));
-    [[2.2, 3.4, 1.9], [1.8, 3.0, 3.3], [1.35, 2.6, 4.6], [0.85, 2.0, 5.8], [0.4, 1.2, 6.8]].forEach(([r, h, y]) => { const c = new THREE.ConeGeometry(r, h, 8); c.translate(0, y, 0); parts.push(vcol(c, [0.07, 0.17, 0.1], 0.35)); });
+    [[2.2, 3.6, 2.0], [1.65, 3.0, 3.7], [1.05, 2.4, 5.2], [0.5, 1.6, 6.5]].forEach(([r, h, y]) => { const c = new THREE.ConeGeometry(r, h, 7, 1, true); c.translate(0, y, 0); parts.push(vcol(c, [0.07, 0.17, 0.1], 0.35)); });
     const tg = THREE.BufferGeometryUtils.mergeBufferGeometries(parts); tg.computeVertexNormals();
     const count = Q.trees || 900, inst = new THREE.InstancedMesh(tg, windify(new THREE.MeshLambertMaterial({ vertexColors: true }), 0.0012), count);
     const R = G.rngF(11), m4 = new THREE.Matrix4(); let n = 0, tries = 0;
@@ -152,7 +178,7 @@ G.buildWorld = function (scene, T, Q) {
       inst.setMatrixAt(n++, m4); W.treePos.push([x, z]);
       if (d < 90) col(x - 0.3 * s, z - 0.3 * s, x + 0.3 * s, z + 0.3 * s, y - 1, y + 4);
     }
-    inst.count = n; inst.castShadow = true; inst.receiveShadow = true; scene.add(inst);
+    inst.count = n; chunkify(inst, 80, 8, 170, true);
   }
   {
     const parts = [], trunk = new THREE.CylinderGeometry(0.09, 0.13, 5, 6); trunk.translate(0, 2.5, 0);
@@ -164,7 +190,7 @@ G.buildWorld = function (scene, T, Q) {
     while (n < count && tries < 9000) { tries++; const a = R() * Math.PI * 2, d = 16 + R() * 60, x = Math.cos(a) * d + 4, z = Math.sin(a) * d + 4;
       if (blocked(x, z) || (x > 14 && x < 38 && z > 8 && z < 30) || Math.hypot(x - 30, z + 30) < 7) continue;
       const s = 0.8 + R() * 0.5, y = terrainH(x, z); m4.compose(new V3(x, y - 0.1, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, R() * 6, 0)), new V3(s, s, s)); inst.setMatrixAt(n++, m4); col(x - 0.2, z - 0.2, x + 0.2, z + 0.2, y - 1, y + 4); }
-    inst.count = n; inst.castShadow = true; inst.receiveShadow = true; scene.add(inst);
+    inst.count = n; chunkify(inst, 80, 7, 120, true);
   }
   { // rocks
     const rg = new THREE.IcosahedronGeometry(1, 1), rp = rg.attributes.position, R = G.rngF(5);
@@ -175,7 +201,7 @@ G.buildWorld = function (scene, T, Q) {
     [[33.6, -27.2, 1.5], [32.6, -33.2, 2.2], [27.4, -34.0, 1.2], [35.2, -30.6, 1.0], [24.4, -32.2, 0.9], [27.8, 22.5, 1.3], [-20, 14, 1.4], [20, 26, 1.1]].forEach(r => list.push(r));
     const inst = new THREE.InstancedMesh(rg, M.rock, list.length), m4 = new THREE.Matrix4();
     list.forEach(([x, z, s], i) => { const y = terrainH(x, z); m4.compose(new V3(x, y + s * 0.2, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(R() * 0.3, R() * 6, R() * 0.3)), new V3(s * (1 + R() * 0.5), s, s)); inst.setMatrixAt(i, m4); if (s > 0.8) col(x - s * 0.9, z - s * 0.9, x + s * 0.9, z + s * 0.9, y - 1, y + s * 1.2); });
-    inst.castShadow = inst.receiveShadow = true; scene.add(inst);
+    chunkify(inst, 80, 3, 140, true);
     W.signalRock = { x: 32.6, z: -33.2, top: terrainH(32.6, -33.2) + 2.2 };
   }
   { // grass tufts + wildflowers
@@ -193,7 +219,7 @@ G.buildWorld = function (scene, T, Q) {
       quad[(x > 6 ? 1 : 0) + (z > 3 ? 2 : 0)].push([x, z]);
     }
     const m4 = new THREE.Matrix4();
-    for (const qd of quad) { if (!qd.length) continue; const inst = new THREE.InstancedMesh(bg, gm, qd.length); qd.forEach(([x, z], i) => { const s = 0.7 + R() * 0.8; m4.compose(new V3(x, terrainH(x, z), z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, R() * 6, 0)), new V3(s, s * (0.8 + R() * 0.6), s)); inst.setMatrixAt(i, m4); }); inst.receiveShadow = true; scene.add(inst); }
+    for (const qd of quad) { if (!qd.length) continue; const inst = new THREE.InstancedMesh(bg, gm, qd.length); qd.forEach(([x, z], i) => { const s = 0.7 + R() * 0.8; m4.compose(new V3(x, terrainH(x, z), z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, R() * 6, 0)), new V3(s, s * (0.8 + R() * 0.6), s)); inst.setMatrixAt(i, m4); }); chunkify(inst, 20, 1, 40, false); }
     // wildflowers (instanced, coloured per instance)
     const fl = []; const st = new THREE.CylinderGeometry(0.006, 0.008, 0.36, 3); st.translate(0, 0.18, 0); fl.push(vcol(st, [0.2, 0.35, 0.12]));
     const hd = new THREE.IcosahedronGeometry(0.045, 0); hd.scale(1, 0.55, 1); hd.translate(0, 0.37, 0); fl.push(vcol(hd, [1, 1, 1], 0));
@@ -204,7 +230,7 @@ G.buildWorld = function (scene, T, Q) {
     const finst = new THREE.InstancedMesh(fg, windify(new THREE.MeshLambertMaterial({ vertexColors: true }), 1.2), fpos.length);
     const fcols = ['#ff4fa0', '#7a6aff', '#ffffff', '#ffd040', '#ff7040', '#c060ff', '#6aa0ff'].map(h => C(h));
     fpos.forEach(([x, z], i) => { const s = 0.7 + R() * 0.7; m4.compose(new V3(x, terrainH(x, z) + (z > 9.9 && z < 10.6 && Math.abs(x) < 7 ? 0.08 : 0), z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, R() * 6, 0)), new V3(s, s, s)); finst.setMatrixAt(i, m4); finst.setColorAt(i, fcols[(R() * fcols.length) | 0]); });
-    scene.add(finst);
+    chunkify(finst, 20, 1, 55, false);
   }
 
   // ================= cabin =================
@@ -464,7 +490,7 @@ G.buildWorld = function (scene, T, Q) {
     poster(T.posterKaylie, 8.6, Y + 1.55, -3.41, 0.6, 0.9, 0); poster(T.posterGame, 9.83, Y + 1.5, -1.3, 0.55, 0.82, -Math.PI / 2); poster(T.posterKaylie, 7.55, Y + 1.7, -3.41, 0.4, 0.6, 0);
     poster(T.sketchMountain, 5.3, Y + 1.55, -3.41, 0.42, 0.42, 0.06); poster(T.sketchFamily, 5.85, Y + 1.7, -3.41, 0.42, 0.42, -0.04); poster(T.sketchLeon, 6.4, Y + 1.5, -3.41, 0.42, 0.42, 0.03);
     poster(T.pressed, 5.4, Y + 1.55, 6.84, 0.45, 0.45, Math.PI); poster(T.pressed, 6.2, Y + 1.65, 6.84, 0.35, 0.35, Math.PI);
-    W.fairy = []; for (let i = 0; i < 14; i++) { const b = new THREE.Mesh(new THREE.SphereGeometry(0.018, 5, 4), new THREE.MeshBasicMaterial({ color: C(['#ffb0e0', '#fff0a0', '#a0e0ff'][i % 3]) })); b.position.set(5.15 + i * 0.1, Y + 1.98 - Math.sin(i / 13 * Math.PI) * 0.16, -3.38); scene.add(b); W.fairy.push(b); }
+    W.fairy = []; const fg2 = new THREE.Group(), fm = new THREE.MeshBasicMaterial({ color: C('#ffb0e0') }); scene.add(fg2); for (let i = 0; i < 14; i++) { const b = new THREE.Mesh(new THREE.SphereGeometry(0.018, 5, 4), fm); b.position.set(5.15 + i * 0.1, Y + 1.98 - Math.sin(i / 13 * Math.PI) * 0.16, -3.38); fg2.add(b); } W.fairy.push(mergeKids(fg2, fm));
     // Luke's desk: dead laptop, crank charger, cans
     box(M.dark, 7.0, Y, -3.4, 7.7, Y + 0.75, -2.9, { col: true }); box(G.mat('#222', 40), 7.1, Y + 0.75, -3.35, 7.5, Y + 0.77, -3.05); box(G.mat('#222', 40), 7.1, Y + 0.77, -3.36, 7.5, Y + 1.0, -3.34);
     for (let i = 0; i < 3; i++) cyl(G.mat(['#3aa04a', '#c03030', '#3070c0'][i], 60), 7.58, Y + 0.81, -3.2 + i * 0.09, 0.025, 0.025, 0.12, 8);
@@ -602,6 +628,7 @@ G.buildWorld = function (scene, T, Q) {
       const z = rows.water, g = new THREE.Group(); g.position.set(x, 0.07, z); scene.add(g); const leaves = [];
       for (let k = 0; k < 6; k++) { const l = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.36, 4), leafDry); l.position.set((k - 2.5) * 0.03, 0.17, (k % 2) * 0.03); l.rotation.z = (k - 2.5) * 0.45; leaves.push(l); g.add(l); }
       const top = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.02, 0.05, 6), carrotM); top.position.y = 0.01; g.add(top);
+      leaves.length = 0; const lm = mergeKids(g, leafDry); lm.material = leafDry; leaves.push(lm);
       const wet = new THREE.Mesh(new THREE.CircleGeometry(0.42, 12), wetM.clone()); wet.rotation.x = -Math.PI / 2; wet.position.set(x, 0.075, z); wet.visible = false; scene.add(wet);
       W.chores.water.push({ x, y: 0.2, z, group: g, leaves, wet, done: false, leafM });
       const pg = new THREE.Group(); pg.position.set(x, 0.07, rows.potato); scene.add(pg);
@@ -611,12 +638,13 @@ G.buildWorld = function (scene, T, Q) {
       const tg = new THREE.Group(); tg.position.set(x, 0.07, rows.tomato); scene.add(tg);
       const stake = new THREE.Mesh(new THREE.BoxGeometry(0.04, 1.2, 0.04), stakeM); stake.position.y = 0.6; tg.add(stake);
       const tb = new THREE.Mesh(new THREE.DodecahedronGeometry(0.26, 1), potLeaf); tb.scale.set(0.9, 1.6, 0.9); tb.position.y = 0.48; tb.castShadow = true; tg.add(tb);
-      const toms = []; for (let k = 0; k < 5; k++) { const t = new THREE.Mesh(new THREE.SphereGeometry(0.055, 9, 7), tomM); t.position.set(Math.cos(k * 1.7) * 0.21, 0.3 + k * 0.12, Math.sin(k * 1.7) * 0.21); tg.add(t); toms.push(t); }
+      const toms = []; for (let k = 0; k < 5; k++) { const t = new THREE.Mesh(new THREE.SphereGeometry(0.055, 9, 7), tomM); t.position.set(Math.cos(k * 1.7) * 0.21, 0.3 + k * 0.12, Math.sin(k * 1.7) * 0.21); tg.add(t); } toms.push(mergeKids(tg, tomM));
       W.chores.tomato.push({ x, y: 0.55, z: rows.tomato, group: tg, toms, done: false });
     });
     for (const [x, z] of [[15.5, -1.0], [17.2, -1.4], [19.0, -1.0], [20.4, -1.3], [14.3, -1.5]]) {
       const g = new THREE.Group(); g.position.set(x, 0.05, z); scene.add(g);
       for (let k = 0; k < 8; k++) { const s = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.26 + (k % 3) * 0.07, 3), weedM); s.position.set(Math.cos(k) * 0.06, 0.12, Math.sin(k) * 0.06); s.rotation.set(Math.sin(k * 3) * 0.5, 0, Math.cos(k * 2) * 0.5); g.add(s); }
+      mergeKids(g, weedM);
       W.chores.weed.push({ x, y: 0.1, z, group: g, done: false });
     }
     for (let i = 0; i < 10; i++) { const x = 14 + i * 0.75, z = -1.2 + (i % 2 ? 0.2 : -0.2); if (W.chores.weed.some(w => Math.abs(w.x - x) < 0.4)) continue; const g = new THREE.ConeGeometry(0.12, 0.25, 5); addStatic(g, deadM, x, 0.17, z, 0.2, i, 0.3); }
@@ -805,7 +833,7 @@ G.buildWorld = function (scene, T, Q) {
     W.skyU.sunDir.value.copy(W.sunOff).normalize(); W.skyU.sunCol.value.set(p.night ? 0x000000 : p.sun).convertSRGBToLinear().multiplyScalar(p.si * 0.5);
     W.hemi.color.set(p.hs); W.hemi.groundColor.set(p.hg);
     for (const n in LS) LS[n].on = false; (o.lights || p.lights).forEach(n => { if (LS[n]) LS[n].on = true; });
-    W.windowGlow.forEach(g => (g.material.opacity = p.glow * 0.5));
+    W.windowGlow.forEach(g => { g.material.opacity = p.glow * 0.5; g.visible = p.glow > 0; });
     W.lantern.material.color.set(LS.porch.on ? 0xffc070 : 0x5a4a30);
     W.stars.visible = W.moon.visible = !!p.stars; W.rain.visible = !!p.rain; W.rainU.uAmt.value = p.rain || 0;
     W.flame.visible = LS.candle.on;
@@ -842,6 +870,8 @@ G.buildWorld = function (scene, T, Q) {
   let t = 0;
   W.update = function (dt, region, actors) {
     t += dt; W.windU.value = t * (0.6 + W.pre.wind * 6);
+    W.cullT = (W.cullT || 0) - dt;
+    if (W.cullT <= 0 && actors[0]) { W.cullT = 0.4; const a = actors[0], far = W.pre.ff + 10; for (const c of W.chunks) c.mesh.visible = Math.hypot(a.x - c.x, a.z - c.z) - c.r < Math.min(c.maxD, far) && region !== 'base'; }
     W.fire.forEach((m, i) => { m.scale.set(1, 0.8 + Math.sin(t * (9 + i * 2) + i) * 0.25, 1); });
     W.flame.scale.y = 1 + Math.sin(t * 15) * 0.15;
     if (region === 'base') {
