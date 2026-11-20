@@ -5,7 +5,7 @@ A first-person horror story game, about 45 to 60 minutes long. You are Leon, 13,
 **Content warning:** graphic violence, gore, death of family members, cannibalism.
 
 ## Play
-- Online: https://merchantsteam29.github.io/game5/
+- Online: https://merchantsteam29.github.io/PLENTY-MORE/
 - Locally: open `index.html` in Chrome, Edge or Firefox. It needs internet the first time to load Three.js. Headphones are recommended.
 
 Progress saves at the start of each day, and **Continue** on the title screen picks up from there.
