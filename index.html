@@ -28,6 +28,7 @@
   #tsub { font-family: 'VT323', monospace; font-size: clamp(20px, 3vw, 28px); opacity: 0.85; margin-top: 8px; max-width: 760px; }
   #obj { position: fixed; top: max(14px, env(safe-area-inset-top)); left: 16px; font-size: clamp(15px, 2.2vw, 19px); padding: 6px 12px; background: rgba(0,0,0,0.45);
     border-left: 3px solid #2f7dff; opacity: 0; transition: opacity 0.4s; z-index: 3; max-width: calc(100vw - 100px); }
+  #fps { position: fixed; top: 6px; right: 70px; z-index: 30; font-family: 'VT323', monospace; font-size: 16px; color: #8f8; background: rgba(0,0,0,0.6); padding: 2px 8px; display: none; pointer-events: none; }
   #toast { position: fixed; top: 64px; left: 16px; right: 16px; text-align: center; font-family: 'VT323', monospace; font-size: 24px; opacity: 0; transition: opacity 0.5s; z-index: 3; pointer-events: none; text-shadow: 0 2px 0 #000; }
   #prompt { position: fixed; top: 57%; left: 16px; right: 16px; text-align: center; font-size: clamp(16px, 2.4vw, 20px); text-shadow: 0 2px 0 #000; z-index: 3; pointer-events: none; opacity: 0; transition: opacity 0.15s; }
   #prompt b { display: inline-block; min-width: 22px; padding: 0 6px; margin-right: 4px; border: 2px solid #eee; border-radius: 4px; background: rgba(0,0,0,0.4); }
@@ -106,6 +107,7 @@
 <body>
 <div id="obj"></div>
 <div id="toast"></div>
+<div id="fps"></div>
 <div id="prompt"></div>
 <div id="dot"></div>
 <svg id="ring" viewBox="0 0 44 44"><circle cx="22" cy="22" r="18" stroke="rgba(0,0,0,0.5)"/><circle id="ringc" cx="22" cy="22" r="18" stroke="#fff" stroke-dasharray="113" stroke-dashoffset="113" transform="rotate(-90 22 22)"/></svg>
@@ -139,6 +141,7 @@
   <div id="sqnote">Graphics change applies after restarting (Quit to title).</div>
   <label>Look sensitivity <input id="ssens" type="range" min="0.3" max="2.5" step="0.05"></label>
   <label>Invert look Y <input id="sinv" type="checkbox"></label>
+  <label>Show FPS (F key) <input id="sfps" type="checkbox"></label>
   <label>Field of view <input id="sfov" type="range" min="60" max="95" step="1"></label>
   <label>Text speed <select id="stext"><option value="normal">Normal</option><option value="fast">Fast</option></select></label>
   <label>Volume <input id="svol" type="range" min="0" max="1" step="0.05"></label>

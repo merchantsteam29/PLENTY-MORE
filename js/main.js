@@ -6,10 +6,13 @@
   const wrapA = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
   const store = { get(k, d) { try { const v = localStorage.getItem('plentymore.' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem('plentymore.' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } } };
   const isTouch = matchMedia('(pointer: coarse)').matches;
-  const SET = Object.assign({ quality: isTouch ? 'low' : 'high', sens: 1, invert: false, text: 'normal', vol: 0.9, music: 0.7, fov: 72 }, store.get('settings', {}));
+  // pick a sensible default from the GPU name (integrated / mobile GPUs start lower)
+  const GPU = (() => { try { const c = document.createElement('canvas'), gl = c.getContext('webgl'); if (!gl) return ''; const e = gl.getExtension('WEBGL_debug_renderer_info'), s = e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : ''; const l = gl.getExtension('WEBGL_lose_context'); if (l) l.loseContext(); return s || ''; } catch (e) { return ''; } })();
+  const weakGPU = /intel|uhd|iris|hd graphics|mali|adreno|powervr|swiftshader|llvmpipe|basic render|vega [0-9] |radeon.{0,6}graphics|apple gpu/i.test(GPU);
+  const SET = Object.assign({ quality: isTouch ? 'low' : weakGPU ? 'medium' : 'high', showFps: false, sens: 1, invert: false, text: 'normal', vol: 0.9, music: 0.7, fov: 72 }, store.get('settings', {}));
   const QL = {
     low: { tex: 0.5, face: 256, body: 256, aniso: 2, trees: 420, grass: 2200, flowers: 500, shadow: 1024, pool: 2, pr: 0.85, aa: false, rain: 1100, baseShadow: false, soft: false },
-    medium: { tex: 0.75, face: 512, body: 512, aniso: 4, trees: 650, grass: 4500, flowers: 1000, shadow: 1024, pool: 3, pr: 1.0, aa: true, rain: 2000, baseShadow: false, soft: false },
+    medium: { tex: 0.75, face: 512, body: 512, aniso: 4, trees: 650, grass: 4500, flowers: 1000, shadow: 1024, pool: 3, pr: 1.0, aa: false, rain: 2000, baseShadow: false, soft: false },
     high: { tex: 1, face: 512, body: 512, aniso: 8, trees: 850, grass: 7000, flowers: 1400, shadow: 2048, pool: 3, pr: 1.25, aa: true, rain: 2600, baseShadow: false, soft: true }
   };
   const Q = QL[SET.quality] || QL.high;
@@ -46,9 +49,22 @@
     initPortrait();
     W.onDoor = (d, open) => { if (open) A.creak(d.cx, d.y + 1, d.cz); else A.doorShut(d.cx, d.y + 1, d.cz); };
     addEventListener('resize', resize); resize();
-    bindUI();
-    renderer.compile(scene, camera);
+    bindUI(); $('fps').style.display = SET.showFps ? 'block' : 'none';
+    addEventListener('keydown', e => { if (e.code === 'KeyF' && !e.repeat) { SET.showFps = !SET.showFps; $('fps').style.display = SET.showFps ? 'block' : 'none'; store.set('settings', SET); } });
+    warmUp();
     requestAnimationFrame(loop);
+  }
+  // Build every expression texture and compile every shader up front, so nothing hitches mid-game.
+  function warmUp() {
+    const ex = ['neutral', 'soft', 'happy', 'grin', 'laugh', 'sad', 'worried', 'angry', 'scared', 'tired', 'dark', 'yell', 'sleep'];
+    for (const k in G.CHARS) for (const e of ex.concat(k === 'linda' ? ['creepy', 'blood'] : [])) T.faceTex(k, e);
+    T.bodyTex('linda', 'blood');
+    const show = [W.bodies.group, leonP.root, W.decals, W.flies, W.curtainGore, W.rain, W.stars, W.moon, W.meatJars, W.lukePhone, W.lilyBook, W.roseCrown, W.panMeat, W.prepMeat, ...W.windowGlow, ...Object.values(npcs).map(n => n.P.root), ...Object.values(W.plates).map(p => p.group)];
+    const prev = show.map(o => o.visible); show.forEach(o => (o.visible = true));
+    const tmp = new THREE.Group(); ['axe', 'phone', 'mug', 'book', 'sketchbook', 'brush', 'spoon', 'fork', 'can', 'knife', 'crown', 'flowers', 'bucket', 'basket', 'log'].forEach(n => tmp.add(G.makeProp(n, T))); scene.add(tmp);
+    const vmPrev = vm.visible; vm.visible = true;
+    try { renderer.compile(scene, camera); renderer.compile(portrait.qs, portrait.qc); } catch (e) { console.warn(e); }
+    show.forEach((o, i) => (o.visible = prev[i])); scene.remove(tmp); vm.visible = vmPrev;
   }
   function resize() { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
 
@@ -167,6 +183,7 @@
   }
   function openSettings() {
     const s = $('settings'); s.style.display = 'flex';
+    $('sfps').checked = SET.showFps; $('sfps').onchange = () => { SET.showFps = $('sfps').checked; $('fps').style.display = SET.showFps ? 'block' : 'none'; store.set('settings', SET); };
     const q = $('squal'), sens = $('ssens'), inv = $('sinv'), txt = $('stext'), vol = $('svol'), mus = $('smus'), fov = $('sfov');
     q.value = SET.quality; sens.value = SET.sens; inv.checked = SET.invert; txt.value = SET.text; vol.value = SET.vol; mus.value = SET.music; fov.value = SET.fov;
     const apply = () => {
@@ -339,7 +356,13 @@
   }
 
   // ================= loop =================
-  let last = performance.now(), sunFrame = 0;
+  let last = performance.now(), sunFrame = 0, slowT = 0, perfTier = 0, fpsAcc = 0, fpsN = 0;
+  function degrade(t) {
+    if (t === 1) for (const c of W.chunks) c.maxD = c.maxD < 100 ? 18 : Math.min(c.maxD, 85);
+    if (t === 2) { renderer.shadowMap.enabled = false; W.sun.castShadow = false; scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => (m.needsUpdate = true)); }); }
+    if (t === 3) { for (const c of W.chunks) if (c.maxD < 100) c.maxD = 0; while (W.pool.length > 1) scene.remove(W.pool.pop()); scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => (m.needsUpdate = true)); }); }
+    E.toast('Lowered graphics to keep the game smooth.', 3);
+  }
   const actors = [];
   function loop(now) {
     requestAnimationFrame(loop);
@@ -382,9 +405,12 @@
     if (A.ready()) { A.listener(camera); A.tick(dt, { fire: (rg === 'in') && W.lightsSrc.fire.on ? 1 : 0, sizzle: E.amb.sizzle && rg === 'in', birds: rg === 'out' && !paused ? W.pre.birds : 0, night: W.pre.night, inside: rg !== 'out', rain: W.pre.rain && rg === 'out' ? 1 : 0, px: P.x, py: P.y, pz: P.z }); }
     // dynamic resolution
     frameN++; prPerf = prPerf * 0.95 + rdt * 0.05;
-    if (frameN % 40 === 0 && started) { const cur = renderer.getPixelRatio(), maxPR = Math.min(window.devicePixelRatio || 1, Q.pr); let np = cur; if (prPerf > 1 / 52) np = Math.max(0.6, cur - 0.1); else if (prPerf < 1 / 59 && cur < maxPR) np = Math.min(maxPR, cur + 0.05); if (Math.abs(np - cur) > 0.01) renderer.setPixelRatio(np); }
+    if (frameN % 40 === 0 && started) { const cur = renderer.getPixelRatio(), maxPR = Math.min(window.devicePixelRatio || 1, Q.pr); let np = cur; if (prPerf > 1 / 52) np = Math.max(0.5, cur - 0.1); else if (prPerf < 1 / 59 && cur < maxPR) np = Math.min(maxPR, cur + 0.05); if (Math.abs(np - cur) > 0.01) renderer.setPixelRatio(np); }
+    // if still slow at minimum resolution, step quality down (one-time shader rebuild per step)
+    if (started && !paused) { if (prPerf > 1 / 45 && renderer.getPixelRatio() <= 0.51) slowT += rdt; else slowT = Math.max(0, slowT - rdt * 0.5); if (slowT > 3 && perfTier < 3) { slowT = 0; degrade(++perfTier); } }
     renderer.render(scene, camera);
     if (dlg && frameN % 2 === 0) renderPortrait(dlg.who);
+    fpsAcc += rdt; fpsN++; if (fpsAcc > 0.5) { if (SET.showFps) { const i = renderer.info.render; $('fps').textContent = Math.round(fpsN / fpsAcc) + ' fps  ' + (fpsAcc / fpsN * 1000).toFixed(1) + ' ms  res ' + renderer.getPixelRatio().toFixed(2) + '  ' + i.calls + ' calls  ' + Math.round(i.triangles / 1000) + 'k tris  ' + SET.quality + (perfTier ? ' -' + perfTier : ''); } fpsAcc = 0; fpsN = 0; }
   }
 
   // ================= story API =================
